@@ -1,0 +1,216 @@
+# Python scripts for Dutch Auction Experiments
+
+from otree.api import *
+from time import time
+import numpy as np
+import random
+from jsonfield import JSONField
+from iomotions.otree.pages import ScenePage
+
+
+from otree.api import *
+
+# c = cu
+
+doc = 'In this game (otherwise known as the Dutch Auction), players simultaneously bid on the item being\nauctioned.<br/>\nPrior to bidding, they are given an estimate of the actual value of the item.\nThis actual value is revealed after the bidding.<br/>\nYou are facing a clock displaying the price at which you can buy the item. The price continues to\nincrease until one bidder is left.<br/>\nThe bidder who is left, gets the item and pays the price at which the clock stopped. The other bidders pay nothing and earn nothing.<br/>'
+
+
+class Constants(BaseConstants):
+    name_in_url = 'dutchauction'
+    players_per_group = 3
+    num_rounds = 3
+    estimate_error_margin = cu(1)
+    style_background_color = '#F0F0F0'
+    style_text_color = '#1F297E'
+    min_allowable_bid = 0
+    max_allowable_bid = 100
+    bid_decrement = 1
+    # min_allowable_bid = 0
+    # max_allowable_bid = 10
+    # bid_decrement = 0.1
+    timer_mode = 3
+    animation_color = '#BAA382'
+    display_opponents_results = True
+
+
+def creating_session(subsession):
+    session = subsession.session
+    subsession.group_randomly()
+
+    for p in subsession.get_players():
+        import random
+
+        item_value = random.uniform(
+            Constants.min_allowable_bid, Constants.max_allowable_bid
+        )
+        p.item_value_actual = round(item_value, 2)
+        p.number_of_opponents = Constants.players_per_group - 1
+
+
+class Subsession(BaseSubsession):
+    pass
+
+
+def set_winner(group):
+    # import random
+
+    players = group.get_players()
+    group.highest_bid = max([p.bid_amount for p in players])
+
+    players_with_highest_bid = [
+        p for p in players if p.bid_amount == group.highest_bid
+    ]
+
+    # set winner to be random if nobody clicks bid
+    # if timeout_happened = True,
+    #    players_with_highest_bid.random().is_winner = True
+
+    # No player bids, winner set randomly
+    # if (group.highest_bid == 0):
+    #    random_winner = random.randint(0,2)
+    #    players[random_winner].is_winner = True
+    #    players[random_winner].is_timeout_winner = True
+
+    # Same bid from two players
+    if (len(players_with_highest_bid) > 1):
+        # if tied, payout divided between winners
+        for p in players_with_highest_bid:
+            p.is_tied = True;
+            p.number_of_players_tied = len(players_with_highest_bid)
+
+    # No tie, only one winner
+    else:
+        players_with_highest_bid[0].is_winner = True
+
+    for p in players:
+        set_payoff(p)
+
+    for p in players:
+        p.total_earnings = sum([round.payoff for round in p.in_all_rounds()])
+
+
+def bid_waiting(group):
+    pass
+
+
+class Group(BaseGroup):
+    highest_bid = models.CurrencyField()
+    total_earnings = models.CurrencyField()
+    num_messages = models.IntegerField()
+    game_finished = models.BooleanField(initial=False)
+
+
+def set_payoff(player):
+    # Submits highest bid
+    # if player.is_winner and not player.is_timeout_winner:
+    if player.is_winner:
+        player.payoff = player.item_value_actual - player.bid_amount
+
+    # No bids and player is randomly chosen as winner
+    # elif player.is_winner and player.is_timeout_winner:
+    # player.payoff = player.item_value_actual
+
+    # Players submit tied bids
+    elif player.is_tied:
+        player.payoff = (player.item_value_actual - player.bid_amount) / player.number_of_players_tied
+
+    else:
+        player.payoff = 0
+
+
+def live_endBid(player, data):
+    group = player.group
+    # This method sends a response to all players, and JS code changes bid value for other players
+    #    my_id = player.id_in_group
+    #    response = dict(bidder_id=my_id)
+    #    return {0: response}
+
+    # Send a response only to the other players =
+    other_players = player.get_others_in_group()
+    response = {}
+    for p in other_players:
+        id = p.id_in_group
+        response[id] = True
+
+    return response
+
+
+def get_countdown_timer(player):
+    pass
+
+
+def otherPlayersValues(player):
+    group = player.group
+    playerList = player.get_others_in_group()
+    valueList = []
+
+    for player in playerList:
+        valueList.append(player.item_value_actual)
+
+    return valueList
+
+
+def other_player(player):
+    group = player.group
+    return player.get_others_in_group()[0]
+
+
+class Player(BasePlayer):
+    item_value = models.CurrencyField()
+    bid_amount = models.CurrencyField(label='Bid amount')
+    is_winner = models.BooleanField(initial=False)
+    is_tied = models.BooleanField(initial=False)
+    number_of_players_tied = models.IntegerField()
+    item_value_actual = models.CurrencyField()
+    total_earnings = models.CurrencyField()
+    number_of_opponents = models.IntegerField()
+    is_timeout_winner = models.BooleanField(initial=False)
+
+
+class Introduction(ScenePage):
+    scene_name ="dutch_practice_intro_1"
+    def is_displayed(self):
+        return self.round_number == 1
+
+
+
+class BidWaitPage(WaitPage):
+    pass
+
+
+class Bid(ScenePage):
+    scene_name ="dutch_practice_bid_1"
+    form_model = 'player'
+    form_fields = ['bid_amount']
+    live_method = 'live_endBid'
+
+    @staticmethod
+    def js_vars(player):
+        group = player.group
+        return dict(
+            player_id=player.id_in_group,
+            others_values=otherPlayersValues(player),
+            display_opponents_results=Constants.display_opponents_results
+        )
+
+    @staticmethod
+    def before_next_page(player, timeout_happened):
+        if timeout_happened:
+            player.bid_amount = 0
+
+    @staticmethod
+    def get_timeout_seconds(player):
+        bid_seconds = (Constants.max_allowable_bid / Constants.bid_decrement) + 4
+        return bid_seconds
+
+
+class ResultsWaitPage(WaitPage):
+    after_all_players_arrive = 'set_winner'
+
+
+class Results(Page):
+    scene_name = "dutch_practice_results_1"
+    form_model = 'player'
+
+
+page_sequence = [Introduction, BidWaitPage, Bid, ResultsWaitPage, Results]
